@@ -20,6 +20,9 @@
 #include <string.h>
 #include <time.h>
 
+#define RTO_MS              20  
+#define MAX_TRIES            4  
+#define LOSSY_REELECT_MULT   4  
 #define ADDR_SPACE 65536
 #define MAX_NODES 512
 #define MAX_MIX 16
@@ -44,6 +47,8 @@ typedef struct {
     bool known;
     bool bid_valid;
     time_ms_t last_heard_ms;
+    uint8_t   tries;  
+    time_ms_t retx_at_ms;  
 } neigh_t;
 
 typedef struct {
@@ -107,6 +112,8 @@ typedef struct {
     time_ms_t announce_at_ms;
     bool      bcast_pending; 
     time_ms_t bcast_at_ms;
+
+    time_ms_t last_hello_fwd_ms;
 } node_t;
 
 static time_ms_t now_ms(void) {
@@ -781,6 +788,10 @@ static void handle_stp(node_t *node, int port, mixnet_packet *packet) {
     neigh->stp_root = stp->root_address;
     neigh->bid_valid = true;
 
+    if (node->root_port >= 0 && stp->root_address == node->stp.root) {
+        node->last_hello_heard_ms = now_ms();
+    }
+
     mixnet_address old_root = node->stp.root;
     uint16_t       old_len  = node->stp.len;
 
@@ -929,7 +940,7 @@ static void check_timer(node_t *node) {
             advertise_stp(node, -1);
             node->last_hello_sent_ms = now;
         }
-    } else if (now - node->last_hello_heard_ms >= node->reelection_interval_ms) {
+    } else if (now - node->last_hello_heard_ms >= node->reelection_interval_ms * LOSSY_REELECT_MULT) {
         start_reelection(node);
     }
 
