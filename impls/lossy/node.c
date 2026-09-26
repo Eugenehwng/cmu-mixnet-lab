@@ -25,6 +25,9 @@
 #define MAX_MIX 16
 #define INF_DIST (UINT64_MAX / 4)
 #define RH_SIZE (sizeof(mixnet_packet_routing_header))
+#define LISTEN_PER_ADDR_MS 10
+#define LISTEN_CAP_ADDR    64
+#define DEBOUNCE_MS        2
 
 typedef uint64_t time_ms_t;
 
@@ -99,6 +102,11 @@ typedef struct {
     uint16_t mix_len;
     unsigned int rng_seed;
     bool rr_toggle;
+
+    bool      announced;
+    time_ms_t announce_at_ms;
+    bool      bcast_pending; 
+    time_ms_t bcast_at_ms;
 } node_t;
 
 static time_ms_t now_ms(void) {
@@ -705,6 +713,36 @@ static void forward_transit(node_t *node, mixnet_packet *packet) {
     forward_out(node, out);
 }
 
+static bool neighbor_needs(const node_t *node, int port) {
+    if (port == node->root_port) {
+        return true;
+    }
+    const neigh_t *n = &node->port_to_neigh[port];
+    if (!n->bid_valid) {
+        return true; 
+    }
+    if (n->stp_root != node->stp.root) {
+        return n->stp_root > node->stp.root; 
+    }
+    return (uint32_t)n->stp_len > (uint32_t)node->stp.len + 1;
+}
+
+static void advertise_needed(node_t *node) {
+    for (int p = 0; p < (int)node->num_neighbors; p++) {
+        if (neighbor_needs(node, p)) {
+            send_stp(node, p);
+        }
+    }
+    node->announced = true;
+}
+
+static void schedule_broadcast(node_t *node) {
+    if (!node->bcast_pending) {
+        node->bcast_pending = true;
+        node->bcast_at_ms   = now_ms() + DEBOUNCE_MS;
+    }
+}
+
 static void handle_stp(node_t *node, int port, mixnet_packet *packet) {
     if (port == node->user_port || port < 0 ||
         port >= (int)node->num_neighbors) {
@@ -743,12 +781,17 @@ static void handle_stp(node_t *node, int port, mixnet_packet *packet) {
     neigh->stp_root = stp->root_address;
     neigh->bid_valid = true;
 
+    mixnet_address old_root = node->stp.root;
+    uint16_t       old_len  = node->stp.len;
+
     if (recompute_root(node)) {
         if (node->root_port >= 0 &&
             node->stp.root == node->failed_root) {
             node->failed_root = INVALID_MIXADDR;
         }
-        advertise_stp(node, -1);
+        if (node->stp.root != old_root || node->stp.len != old_len) {
+            schedule_broadcast(node);
+        }
         return;
     }
 
@@ -868,8 +911,21 @@ static void check_timer(node_t *node) {
         node->failed_root = INVALID_MIXADDR;
     }
 
+    if (node->bcast_pending && now >= node->bcast_at_ms) {
+        advertise_needed(node);                      
+        node->bcast_pending = false;
+    }
+
+    if (!node->announced && node->root_port < 0 &&
+        !node->bcast_pending && now >= node->announce_at_ms) {
+        advertise_stp(node, -1);
+        node->announced = true;
+        node->last_hello_sent_ms = now; 
+    }
+
     if (node->root_port < 0) {
-        if (now - node->last_hello_sent_ms >= node->root_hello_interval_ms) {
+        if (node->announced &&
+            now - node->last_hello_sent_ms >= node->root_hello_interval_ms) {
             advertise_stp(node, -1);
             node->last_hello_sent_ms = now;
         }
@@ -882,6 +938,7 @@ static void check_timer(node_t *node) {
         originate_lsa(node);
     }
 }
+
 
 static void node_free(node_t *node) {
     if (node == NULL) {
@@ -966,6 +1023,12 @@ static bool node_init(node_t *node, void *const handle,
     node->rr_toggle = false;
     node->rng_seed = (unsigned)(now ^ ((uint64_t)node->my_addr << 16));
     register_node(node, node->my_addr);
+
+    uint32_t a = node->my_addr < LISTEN_CAP_ADDR ? node->my_addr : LISTEN_CAP_ADDR;
+    node->announced      = false;
+    node->announce_at_ms = now + (time_ms_t)a * LISTEN_PER_ADDR_MS;
+    node->bcast_pending  = false;
+
     return true;
 }
 
@@ -980,8 +1043,6 @@ void run_node(void *const handle,
         node_free(node);
         return;
     }
-
-    advertise_stp(node, -1);
 
     while (*keep_running) {
         uint8_t port = 0;
