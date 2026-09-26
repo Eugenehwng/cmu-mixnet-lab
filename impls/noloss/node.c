@@ -25,6 +25,9 @@
 #define MAX_MIX 16
 #define INF_DIST (UINT64_MAX / 4)
 #define RH_SIZE (sizeof(mixnet_packet_routing_header))
+#define LISTEN_PER_ADDR_MS 10
+#define LISTEN_CAP_ADDR    64
+#define DEBOUNCE_MS        2
 
 typedef uint64_t time_ms_t;
 
@@ -99,6 +102,11 @@ typedef struct {
     uint16_t mix_len;
     unsigned int rng_seed;
     bool rr_toggle;
+
+    bool      announced;
+    time_ms_t announce_at_ms;
+    bool      bcast_pending; 
+    time_ms_t bcast_at_ms;
 } node_t;
 
 static time_ms_t now_ms(void) {
@@ -743,12 +751,17 @@ static void handle_stp(node_t *node, int port, mixnet_packet *packet) {
     neigh->stp_root = stp->root_address;
     neigh->bid_valid = true;
 
+    mixnet_address old_root = node->stp.root;
+    uint16_t       old_len  = node->stp.len;
+
     if (recompute_root(node)) {
         if (node->root_port >= 0 &&
             node->stp.root == node->failed_root) {
             node->failed_root = INVALID_MIXADDR;
         }
-        advertise_stp(node, -1);
+        if (node->stp.root != old_root || node->stp.len != old_len) {
+            schedule_broadcast(node);
+        }
         return;
     }
 
@@ -966,6 +979,12 @@ static bool node_init(node_t *node, void *const handle,
     node->rr_toggle = false;
     node->rng_seed = (unsigned)(now ^ ((uint64_t)node->my_addr << 16));
     register_node(node, node->my_addr);
+
+    uint32_t a = node->my_addr < LISTEN_CAP_ADDR ? node->my_addr : LISTEN_CAP_ADDR;
+    node->announced      = false;
+    node->announce_at_ms = now + (time_ms_t)a * LISTEN_PER_ADDR_MS;
+    node->bcast_pending  = false;
+
     return true;
 }
 
@@ -980,8 +999,6 @@ void run_node(void *const handle,
         node_free(node);
         return;
     }
-
-    advertise_stp(node, -1);
 
     while (*keep_running) {
         uint8_t port = 0;
