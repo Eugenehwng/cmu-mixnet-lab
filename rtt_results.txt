@@ -1,0 +1,40 @@
+>>> line run 1
+RTT to 7: 1067 us
+>>> line run 2
+RTT to 7: 976 us
+>>> line run 3
+RTT to 7: 1062 us
+>>> line run 4
+RTT to 7: 1023 us
+>>> line run 5
+RTT to 7: 1008 us
+>>> tree run 1
+RTT to 5: 1028 us
+>>> tree run 2
+RTT to 5: 774 us
+>>> tree run 3
+RTT to 5: 954 us
+>>> tree run 4
+RTT to 5: 877 us
+>>> tree run 5
+RTT to 5: 853 us
+>>> ring run 1
+RTT to 4: 772 us
+>>> ring run 2
+RTT to 4: 587 us
+>>> ring run 3
+RTT to 4: 598 us
+>>> ring run 4
+RTT to 4: 703 us
+>>> ring run 5
+RTT to 4: 626 us
+>>> full_mesh run 1
+RTT to 7: 194 us
+>>> full_mesh run 2
+RTT to 7: 164 us
+>>> full_mesh run 3
+RTT to 7: 242 us
+>>> full_mesh run 4
+RTT to 7: 181 us
+>>> full_mesh run 5
+RTT to 7: 318 us
